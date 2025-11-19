@@ -4,57 +4,40 @@ if ( ! defined('ABSPATH') ) exit;
 
 class WRPAI_Import_Runner {
 
-    protected $audio_generator;
-    protected $pdf_generator;
+    public function run( $rows ) {
 
-    public function __construct() {
-        $this->audio_generator = new WRPAI_Audio_Generator();
-        $this->pdf_generator   = new WRPAI_PDF_Generator();
-    }
+        $groups = 0;
+        $audios = 0;
 
-    public function run($rows) {
+        foreach ( $rows as $row ) {
 
-        $grouped = array();
+            $title = sanitize_text_field($row['title']);
+            $mp3   = esc_url_raw($row['mp3']);
+            $buy   = esc_url_raw($row['buy']);
+            $lang  = sanitize_text_field($row['lang']);
 
-        // Group by group_id
-        foreach ($rows as $row) {
-            $gid = $row['group_id'];
-            if (!isset($grouped[$gid])) {
-                $grouped[$gid] = array();
+            $audio_gen = new WRPAI_Audio_Generator();
+
+            $player_id = $audio_gen->create_audio_player($title, [
+                [
+                    'title' => $title,
+                    'mp3'   => $mp3,
+                    'buy'   => $buy,
+                    'lang'  => $lang
+                ]
+            ]);
+
+            if ( $player_id ) {
+                $audios++;
             }
-            $grouped[$gid][] = $row;
+
+            $groups++;
         }
 
-        $result = array(
-            'groups' => count($grouped),
-            'audio'  => 0,
+        return [
+            'groups' => $groups,
+            'audio'  => $audios,
             'pdf'    => 0
-        );
-
-        // Process each group
-        foreach ($grouped as $gid => $items) {
-
-            // Separate formats
-            $audio_items = array_filter($items, function($r){
-                return strtolower($r['format']) == 'audio book';
-            });
-
-            $pdf_items = array_filter($items, function($r){
-                return strtolower($r['format']) == 'pdf' || strtolower($r['format']) == 'epub';
-            });
-
-            // Run generators
-            if (!empty($audio_items)) {
-                $this->audio_generator->create_audio_post($audio_items);
-                $result['audio']++;
-            }
-
-            if (!empty($pdf_items)) {
-                $this->pdf_generator->create_pdf_post($pdf_items);
-                $result['pdf']++;
-            }
-        }
-
-        return $result;
+        ];
     }
 }
