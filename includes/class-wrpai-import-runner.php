@@ -4,92 +4,140 @@ if (!defined('ABSPATH')) exit;
 
 class WRPAI_Import_Runner {
 
+    /**
+     * Çalıştırıcı: CSV satırlarını işler ve Audio Player verilerini wrap_players option'ına yazar.
+     *
+     * @param array $rows
+     * @return array
+     */
     public function run($rows) {
-
         $groups = [];
-        foreach ($rows as $row) {
 
-            // Filtre: Sadece Audio Book satırları işlenecek
-            if (trim($row['format']) !== 'Audio Book') {
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
                 continue;
             }
 
-            $gid = trim($row['group_id']);
-            if (!isset($groups[$gid])) {
-                $groups[$gid] = [];
+            $format = isset($row['format']) ? trim($row['format']) : '';
+            if ($format !== 'Audio Book') {
+                continue;
             }
 
-            $groups[$gid][] = $row;
+            $group_id = isset($row['group_id']) ? trim($row['group_id']) : '';
+            if ($group_id === '') {
+                continue;
+            }
+
+            if (!isset($groups[$group_id])) {
+                $groups[$group_id] = [];
+            }
+
+            $groups[$group_id][] = $row;
         }
 
         $result = [
             'groups' => count($groups),
             'audio'  => 0,
-            'pdf'    => 0
+            'pdf'    => 0,
         ];
 
-        foreach ($groups as $gid => $items) {
-
-            // --- PLAYER OLUŞTUR ---
-            $first = $items[0];
-
-            $player_name = trim($first['product_title']);
-            $player_slug = trim($first['slug']);
-
-            if (!function_exists('wrap_audio_core')) {
-                continue; // WRAP Audio Engine aktif değil
-            }
-
-            // Player oluştur
-            $player_id = wrap_audio_core()->players->create_player($player_name, $player_slug);
-
-            if (!$player_id) {
-                continue;
-            }
-
-            $result['audio']++;
-
-            // --- TRACKLERİ OLUŞTUR ---
-            foreach ($items as $row) {
-
-                $lang = strtoupper(trim($row['language']));
-                $mp3  = trim($row['file_urls']);
-                $title = trim($row['product_title']);
-
-                // Dil kategorisi oluştur (yoksa)
-                $cat_id = $this->ensure_language_category($lang);
-
-                // Track oluştur
-                $track_id = wrap_audio_core()->tracks->create_track([
-                    'title'     => $title,
-                    'author'    => '',
-                    'category'  => $cat_id,
-                    'mp3_url'   => $mp3,
-                    'ogg_url'   => '',
-                    'image_url' => '',
-                    'lang'      => $lang,
-                ]);
-
-                if ($track_id) {
-                    // Track player içine ekle
-                    wrap_audio_core()->players->add_track_to_player($player_id, $track_id);
-                }
-            }
+        if (empty($groups)) {
+            return $result;
         }
+
+        $players = get_option('wrap_players', []);
+        if (!is_array($players)) {
+            $players = [];
+        }
+
+        foreach ($groups as $group_id => $items) {
+            $player = $this->build_player($group_id, $items);
+            $players[$player['id']] = $player;
+            $result['audio']++;
+        }
+
+        update_option('wrap_players', $players);
 
         return $result;
     }
 
+    /**
+     * Belirli bir grup için player yapısını oluşturur.
+     *
+     * @param string $group_id
+     * @param array  $items
+     * @return array
+     */
+    private function build_player($group_id, $items) {
+        $first = reset($items);
 
-    private function ensure_language_category($lang)
-    {
-        // Var mı?
-        $existing = wrap_audio_core()->categories->get_category_by_name($lang);
-        if ($existing) {
-            return $existing->id;
+        $name = isset($first['product_title']) ? trim($first['product_title']) : '';
+        if ($name === '') {
+            $name = $group_id;
         }
 
-        // Yoksa oluştur
-        return wrap_audio_core()->categories->create_category($lang);
+        $slug = $this->generate_slug($group_id, $name);
+
+        $player = [
+            'id'          => $slug,
+            'name'        => $name,
+            'category'    => 'Audio Book',
+            'description' => '',
+            'language'    => '',
+            'settings'    => [ 'autoplay' => false ],
+            'track_ids'   => [],
+            'tracks'      => [],
+        ];
+
+        foreach ($items as $row) {
+            $player['tracks'][] = $this->build_track($row);
+        }
+
+        return $player;
+    }
+
+    /**
+     * CSV satırından track verisini hazırlar.
+     *
+     * @param array $row
+     * @return array
+     */
+    private function build_track($row) {
+        $title = isset($row['product_title']) ? trim($row['product_title']) : '';
+        $language = isset($row['language']) ? trim($row['language']) : '';
+        $file_urls = isset($row['file_urls']) ? trim($row['file_urls']) : '';
+        $buy_link = isset($row['buy_link']) ? trim($row['buy_link']) : '';
+
+        return [
+            'title'    => $title,
+            'author'   => '',
+            'category' => $language,
+            'img'      => '',
+            'mp3'      => $file_urls,
+            'ogg'      => '',
+            'buy'      => $buy_link,
+            'lyrics'   => '',
+        ];
+    }
+
+    /**
+     * group_id temel alınarak benzersiz slug üretir.
+     *
+     * @param string $group_id
+     * @param string $fallback
+     * @return string
+     */
+    private function generate_slug($group_id, $fallback) {
+        $base = sanitize_title($group_id);
+
+        if ($base === '' && $fallback !== '') {
+            $base = sanitize_title($fallback);
+        }
+
+        if ($base === '') {
+            $base = 'audio-book-' . wp_unique_id();
+        }
+
+        return $base;
     }
 }
