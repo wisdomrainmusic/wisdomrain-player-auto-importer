@@ -62,6 +62,26 @@ class WRPAI_Admin_Menu {
 
         if ( move_uploaded_file($file['tmp_name'], $dest_path) ) {
 
+            // After upload, run import
+            add_action('admin_notices', function() use ($dest_path) {
+
+                require_once WRPAI_PATH . 'includes/class-wrpai-csv-parser.php';
+                require_once WRPAI_PATH . 'includes/class-wrpai-import-runner.php';
+
+                $parser = new WRPAI_CSV_Parser();
+                $rows   = $parser->parse($dest_path);
+
+                $runner = new WRPAI_Import_Runner();
+                $result = $runner->run($rows);
+
+                echo '<div class="notice notice-success is-dismissible">';
+                echo '<p><strong>Import tamamlandı:</strong><br>';
+                echo 'Gruplar: ' . $result['groups'] . '<br>';
+                echo 'Audio Player oluşturulan: ' . $result['audio'] . '<br>';
+                echo 'PDF Reader oluşturulan: ' . $result['pdf'];
+                echo '</p></div>';
+            });
+
             // Redirect for success message
             wp_redirect(admin_url('admin.php?page=wrpai-import&wrpai_status=uploaded'));
             exit;
