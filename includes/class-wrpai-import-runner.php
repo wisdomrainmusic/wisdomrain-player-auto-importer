@@ -76,7 +76,7 @@ class WRPAI_Import_Runner {
             $name = $group_id;
         }
 
-        $slug = $this->generate_slug($group_id, $name);
+        $slug = $this->generate_player_slug($name, $group_id);
 
         $player = [
             'id'          => $slug,
@@ -108,10 +108,44 @@ class WRPAI_Import_Runner {
         $file_urls = isset($row['file_urls']) ? trim($row['file_urls']) : '';
         $buy_link = isset($row['buy_link']) ? trim($row['buy_link']) : '';
 
+        $lang_code = strtoupper($language);
+        if ($lang_code === '') {
+            $lang_code = 'UNKNOWN';
+        }
+
+        $cat_id = strtolower($lang_code);
+
+        $lang_names = [
+            'DE' => 'German',
+            'EN' => 'English',
+            'ES' => 'Spanish',
+            'FR' => 'French',
+            'IT' => 'Italian',
+            'PT' => 'Portuguese',
+            'RU' => 'Russian',
+            'TR' => 'Turkish',
+            'UNKNOWN' => 'Unknown',
+        ];
+
+        $cat_name = isset($lang_names[$lang_code]) ? $lang_names[$lang_code] : $lang_code;
+
+        $cats = get_option('wrap_categories', []);
+        if (!is_array($cats)) {
+            $cats = [];
+        }
+
+        if (!isset($cats[$cat_id])) {
+            $cats[$cat_id] = [
+                'id'   => $cat_id,
+                'name' => $cat_name,
+            ];
+            update_option('wrap_categories', $cats);
+        }
+
         return [
             'title'    => $title,
             'author'   => '',
-            'category' => $language,
+            'category' => $cat_id,
             'img'      => '',
             'mp3'      => $file_urls,
             'ogg'      => '',
@@ -121,23 +155,38 @@ class WRPAI_Import_Runner {
     }
 
     /**
-     * group_id temel alınarak benzersiz slug üretir.
+     * Player shortcode'unda kullanılacak güvenli slug üretir.
      *
+     * @param string $title
      * @param string $group_id
-     * @param string $fallback
      * @return string
      */
-    private function generate_slug($group_id, $fallback) {
-        $base = sanitize_title($group_id);
+    private function generate_player_slug($title, $group_id) {
+        $title = is_string($title) ? $title : '';
+        $group_id = is_scalar($group_id) ? (string) $group_id : '';
 
-        if ($base === '' && $fallback !== '') {
-            $base = sanitize_title($fallback);
+        $base = $title . '-' . $group_id;
+
+        if (function_exists('iconv')) {
+            $converted = @iconv('UTF-8', 'ASCII//TRANSLIT', $base);
+            if ($converted !== false) {
+                $base = $converted;
+            }
         }
 
-        if ($base === '') {
-            $base = 'audio-book-' . wp_unique_id();
+        $base = preg_replace('/[^a-zA-Z0-9\s-]/', '', $base);
+        $base = str_replace(' ', '-', $base);
+
+        $slug = sanitize_title(strtolower($base));
+
+        if (empty($slug)) {
+            $slug = 'wr-player-' . (int) $group_id;
         }
 
-        return $base;
+        if (empty($slug)) {
+            $slug = 'wr-player-' . wp_unique_id();
+        }
+
+        return $slug;
     }
 }
