@@ -26,6 +26,7 @@ class WRPAI_Admin_Menu {
     }
 
     public function handle_csv_upload() {
+
         if ( ! isset($_POST['wrpai_nonce']) ) {
             return;
         }
@@ -44,15 +45,15 @@ class WRPAI_Admin_Menu {
 
         $file = $_FILES['wrpai_csv'];
 
-        // Only allow CSV
-        $file_ext = pathinfo($file['name'], PATHINFO_EXTENSION);
-        if ( strtolower($file_ext) !== 'csv' ) {
-            wp_die('Only CSV files are allowed.');
+        // Allow only CSV
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        if ( $ext !== 'csv' ) {
+            wp_die('Only CSV files allowed.');
         }
 
-        // Prepare upload directory
+        // Upload directory
         $upload_dir = wp_upload_dir();
-        $wrpai_dir  = $upload_dir['basedir'] . '/wrpai';
+        $wrpai_dir = $upload_dir['basedir'] . '/wrpai';
 
         if ( ! file_exists($wrpai_dir) ) {
             wp_mkdir_p($wrpai_dir);
@@ -62,28 +63,27 @@ class WRPAI_Admin_Menu {
 
         if ( move_uploaded_file($file['tmp_name'], $dest_path) ) {
 
-            // After upload, run import
-            add_action('admin_notices', function() use ($dest_path) {
+            // ------------ IMPORT BEFORE REDIRECT ------------
+            require_once WRPAI_PATH . 'includes/class-wrpai-csv-parser.php';
+            require_once WRPAI_PATH . 'includes/class-wrpai-import-runner.php';
 
-                require_once WRPAI_PATH . 'includes/class-wrpai-csv-parser.php';
-                require_once WRPAI_PATH . 'includes/class-wrpai-import-runner.php';
+            $parser = new WRPAI_CSV_Parser();
+            $rows = $parser->parse($dest_path);
 
-                $parser = new WRPAI_CSV_Parser();
-                $rows   = $parser->parse($dest_path);
+            $runner = new WRPAI_Import_Runner();
+            $result = $runner->run($rows);
+            // -------------------------------------------------
 
-                $runner = new WRPAI_Import_Runner();
-                $result = $runner->run($rows);
+            // Encode results
+            $query = http_build_query(array(
+                'page'    => 'wrpai-import',
+                'status'  => 'uploaded',
+                'groups'  => $result['groups'],
+                'audio'   => $result['audio'],
+                'pdf'     => $result['pdf'],
+            ));
 
-                echo '<div class="notice notice-success is-dismissible">';
-                echo '<p><strong>Import tamamlandı:</strong><br>';
-                echo 'Gruplar: ' . $result['groups'] . '<br>';
-                echo 'Audio Player oluşturulan: ' . $result['audio'] . '<br>';
-                echo 'PDF Reader oluşturulan: ' . $result['pdf'];
-                echo '</p></div>';
-            });
-
-            // Redirect for success message
-            wp_redirect(admin_url('admin.php?page=wrpai-import&wrpai_status=uploaded'));
+            wp_redirect(admin_url('admin.php?' . $query));
             exit;
 
         } else {
