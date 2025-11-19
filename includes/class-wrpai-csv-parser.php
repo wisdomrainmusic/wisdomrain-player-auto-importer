@@ -1,41 +1,31 @@
 <?php
 
-if ( ! defined('ABSPATH') ) exit;
+if (!defined('ABSPATH')) exit;
 
 class WRPAI_CSV_Parser {
 
     public function parse($file_path) {
 
-        $rows = array();
+        $rows = [];
+        $handle = fopen($file_path, 'r');
 
-        if ( ! file_exists($file_path) ) {
-            return $rows;
-        }
+        if (!$handle) return $rows;
 
-        if ( ($handle = fopen($file_path, 'r')) !== false ) {
+        $header = fgetcsv($handle, 0, ',');
 
-            $header = null;
+        while (($data = fgetcsv($handle, 0, ',')) !== FALSE) {
+            $row = [];
 
-            while ( ($data = fgetcsv($handle, 10000, ",")) !== false ) {
-
-                if ( ! $header ) {
-                    // First row is header
-                    $header = $data;
-                    continue;
-                }
-
-                // Row as associative array
-                $row = array();
-                foreach ($header as $i => $col_name) {
-                    $row[$col_name] = isset($data[$i]) ? $data[$i] : '';
-                }
-
-                $rows[] = $row;
+            foreach ($header as $i => $col) {
+                $key = trim($col);
+                $val = isset($data[$i]) ? trim($data[$i]) : '';
+                $row[$key] = $val;
             }
 
-            fclose($handle);
+            $rows[] = $row;
         }
 
+        fclose($handle);
         return $rows;
     }
 }
