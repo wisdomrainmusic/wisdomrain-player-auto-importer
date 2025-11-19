@@ -75,7 +75,7 @@ class WRPAI_Import_Runner {
         }
 
         foreach ($groups as $group_id => $items) {
-            $player = $this->build_player($group_id, $items);
+            $player = $this->build_player($group_id, $items, $categories);
             $players[$player['id']] = $player;
             $result['audio']++;
         }
@@ -91,9 +91,10 @@ class WRPAI_Import_Runner {
      *
      * @param string $group_id
      * @param array  $items
+     * @param array  $categories
      * @return array
      */
-    private function build_player($group_id, $items) {
+    private function build_player($group_id, $items, array &$categories) {
         $first = reset($items);
 
         $title = isset($first['product_title']) ? sanitize_text_field($first['product_title']) : '';
@@ -114,8 +115,39 @@ class WRPAI_Import_Runner {
             'tracks'      => [],
         ];
 
+        $categories_changed = false;
+
         foreach ($items as $row) {
-            $player['tracks'][] = $this->build_track($row);
+            $lang_code = isset($row['language'])
+                ? strtoupper(trim((string) $row['language']))
+                : 'EN';
+
+            $cat_id = strtolower($lang_code);
+
+            $lang_names = [
+                'DE' => 'German',
+                'EN' => 'English',
+                'ES' => 'Spanish',
+                'FR' => 'French',
+                'IT' => 'Italian',
+                'PT' => 'Portuguese',
+                'RU' => 'Russian',
+                'TR' => 'Turkish',
+            ];
+
+            $cat_name = isset($lang_names[$lang_code])
+                ? $lang_names[$lang_code]
+                : $lang_code;
+
+            if (! isset($categories[$cat_id])) {
+                $categories[$cat_id] = [
+                    'id'   => $cat_id,
+                    'name' => $cat_name,
+                ];
+                $categories_changed = true;
+            }
+
+            $player['tracks'][] = $this->build_track($row, $cat_id);
         }
 
         return $player;
@@ -124,13 +156,11 @@ class WRPAI_Import_Runner {
     /**
      * CSV satırından track verisini hazırlar.
      *
-     * @param array $row
+     * @param array  $row
+     * @param string $cat_id
      * @return array
      */
-    private function build_track($row) {
-        $lang_code = isset($row['_wrpai_lang_code']) ? $row['_wrpai_lang_code'] : $this->normalize_language_code(isset($row['language']) ? $row['language'] : '');
-        $cat_id = strtolower($lang_code);
-
+    private function build_track($row, $cat_id) {
         $title = isset($row['product_title']) ? sanitize_text_field($row['product_title']) : '';
         $mp3 = isset($row['file_urls']) ? esc_url_raw($row['file_urls']) : '';
         $buy = isset($row['buy_link']) ? esc_url_raw($row['buy_link']) : '';
