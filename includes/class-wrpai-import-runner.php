@@ -4,6 +4,19 @@ if (!defined('ABSPATH')) exit;
 
 class WRPAI_Import_Runner {
 
+    /** @var array<string, string> */
+    private $language_names = [
+        'DE' => 'German',
+        'EN' => 'English',
+        'ES' => 'Spanish',
+        'FR' => 'French',
+        'IT' => 'Italian',
+        'PT' => 'Portuguese',
+        'RU' => 'Russian',
+        'TR' => 'Turkish',
+        'UN' => 'Unknown',
+    ];
+
     /**
      * Çalıştırıcı: CSV satırlarını işler ve Audio Player verilerini wrap_players option'ına yazar.
      *
@@ -11,22 +24,32 @@ class WRPAI_Import_Runner {
      * @return array
      */
     public function run($rows) {
+        if (!is_array($rows)) {
+            $rows = [];
+        }
+
         $groups = [];
+        $categories = [];
 
         foreach ($rows as $row) {
             if (!is_array($row)) {
                 continue;
             }
 
-            $format = isset($row['format']) ? trim($row['format']) : '';
-            if ($format !== 'Audio Book') {
+            $format = isset($row['format']) ? trim((string) $row['format']) : '';
+            if ($format === '' || strcasecmp($format, 'Audio Book') !== 0) {
                 continue;
             }
 
-            $group_id = isset($row['group_id']) ? trim($row['group_id']) : '';
+            $group_id = isset($row['group_id']) ? trim((string) $row['group_id']) : '';
             if ($group_id === '') {
                 continue;
             }
+
+            $lang_code = $this->normalize_language_code(isset($row['language']) ? $row['language'] : '');
+            $this->ensure_category($lang_code, $categories);
+
+            $row['_wrpai_lang_code'] = $lang_code;
 
             if (!isset($groups[$group_id])) {
                 $groups[$group_id] = [];
@@ -42,6 +65,7 @@ class WRPAI_Import_Runner {
         ];
 
         if (empty($groups)) {
+            update_option('wrap_categories', $categories);
             return $result;
         }
 
@@ -57,6 +81,7 @@ class WRPAI_Import_Runner {
         }
 
         update_option('wrap_players', $players);
+        update_option('wrap_categories', $categories);
 
         return $result;
     }
@@ -71,18 +96,18 @@ class WRPAI_Import_Runner {
     private function build_player($group_id, $items) {
         $first = reset($items);
 
-        $name = isset($first['product_title']) ? trim($first['product_title']) : '';
-        if ($name === '') {
-            $name = $group_id;
+        $title = isset($first['product_title']) ? sanitize_text_field($first['product_title']) : '';
+        if ($title === '') {
+            $title = sanitize_text_field($group_id);
         }
 
-        $slug = $this->generate_player_slug($name, $group_id);
+        $slug = $this->generate_player_slug($title, $group_id);
 
         $player = [
             'id'          => $slug,
-            'name'        => $name,
-            'category'    => 'Audio Book',
+            'name'        => $title,
             'description' => '',
+            'category'    => '',
             'language'    => '',
             'settings'    => [ 'autoplay' => false ],
             'track_ids'   => [],
@@ -103,53 +128,21 @@ class WRPAI_Import_Runner {
      * @return array
      */
     private function build_track($row) {
-        $title = isset($row['product_title']) ? trim($row['product_title']) : '';
-        $language = isset($row['language']) ? trim($row['language']) : '';
-        $file_urls = isset($row['file_urls']) ? trim($row['file_urls']) : '';
-        $buy_link = isset($row['buy_link']) ? trim($row['buy_link']) : '';
-
-        $lang_code = strtoupper($language);
-        if ($lang_code === '') {
-            $lang_code = 'UNKNOWN';
-        }
-
+        $lang_code = isset($row['_wrpai_lang_code']) ? $row['_wrpai_lang_code'] : $this->normalize_language_code(isset($row['language']) ? $row['language'] : '');
         $cat_id = strtolower($lang_code);
 
-        $lang_names = [
-            'DE' => 'German',
-            'EN' => 'English',
-            'ES' => 'Spanish',
-            'FR' => 'French',
-            'IT' => 'Italian',
-            'PT' => 'Portuguese',
-            'RU' => 'Russian',
-            'TR' => 'Turkish',
-            'UNKNOWN' => 'Unknown',
-        ];
-
-        $cat_name = isset($lang_names[$lang_code]) ? $lang_names[$lang_code] : $lang_code;
-
-        $cats = get_option('wrap_categories', []);
-        if (!is_array($cats)) {
-            $cats = [];
-        }
-
-        if (!isset($cats[$cat_id])) {
-            $cats[$cat_id] = [
-                'id'   => $cat_id,
-                'name' => $cat_name,
-            ];
-            update_option('wrap_categories', $cats);
-        }
+        $title = isset($row['product_title']) ? sanitize_text_field($row['product_title']) : '';
+        $mp3 = isset($row['file_urls']) ? esc_url_raw($row['file_urls']) : '';
+        $buy = isset($row['buy_link']) ? esc_url_raw($row['buy_link']) : '';
 
         return [
             'title'    => $title,
             'author'   => '',
             'category' => $cat_id,
             'img'      => '',
-            'mp3'      => $file_urls,
+            'mp3'      => $mp3,
             'ogg'      => '',
-            'buy'      => $buy_link,
+            'buy'      => $buy,
             'lyrics'   => '',
         ];
     }
@@ -188,5 +181,43 @@ class WRPAI_Import_Runner {
         }
 
         return $slug;
+    }
+
+    /**
+     * CSV dil kodunu normalize eder.
+     *
+     * @param string $language
+     * @return string
+     */
+    private function normalize_language_code($language) {
+        $lang_code = strtoupper(trim((string) $language));
+        if ($lang_code === '') {
+            $lang_code = 'UN';
+        }
+
+        return $lang_code;
+    }
+
+    /**
+     * wrap_categories dizisine dil kategorisini ekler.
+     *
+     * @param string $lang_code
+     * @param array  $categories
+     * @return void
+     */
+    private function ensure_category($lang_code, array &$categories) {
+        $cat_id = strtolower($lang_code);
+        if ($cat_id === '') {
+            $cat_id = 'un';
+        }
+
+        $cat_name = isset($this->language_names[$lang_code]) ? $this->language_names[$lang_code] : $lang_code;
+
+        if (!isset($categories[$cat_id])) {
+            $categories[$cat_id] = [
+                'id'   => $cat_id,
+                'name' => $cat_name,
+            ];
+        }
     }
 }
