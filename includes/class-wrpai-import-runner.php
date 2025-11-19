@@ -29,8 +29,12 @@ class WRPAI_Import_Runner {
             $rows = [];
         }
 
-        $groups     = [];
+        // Audio için: grup + kategori
+        $groups     = []; // WRAP audio player grupları
         $categories = [];
+
+        // PDF için: group_id => satır listesi
+        $pdf_groups = [];
 
         foreach ($rows as $row) {
 
@@ -38,68 +42,172 @@ class WRPAI_Import_Runner {
                 continue;
             }
 
-            // Format kontrolü
             $format = isset($row['format']) ? trim((string) $row['format']) : '';
-            if ($format === '' || strcasecmp($format, 'Audio Book') !== 0) {
+            if ($format === '') {
                 continue;
             }
 
-            // Grup ID gerekli
+            // Ortak group_id kontrolü
             $group_id = isset($row['group_id']) ? trim((string) $row['group_id']) : '';
             if ($group_id === '') {
                 continue;
             }
 
-            // Dil kodu normalize → satıra göm
-            $lang_code = $this->normalize_language_code($row['language'] ?? '');
-            $row['_wrpai_lang_code'] = $lang_code;
+            /*
+             * 1) AUDIO BOOK → WRAP AUDIO PLAYER
+             */
+            if (strcasecmp($format, 'Audio Book') === 0) {
 
-            // Kategori oluştur (id => name)
-            $this->ensure_category($lang_code, $categories);
+                // Dil kodu normalize → satıra göm
+                $lang_code = $this->normalize_language_code($row['language'] ?? '');
+                $row['_wrpai_lang_code'] = $lang_code;
 
-            // Gruba ekle
-            if (!isset($groups[$group_id])) {
-                $groups[$group_id] = [];
+                // Kategori oluştur (id => name)
+                $this->ensure_category($lang_code, $categories);
+
+                // Audio grubuna ekle
+                if (!isset($groups[$group_id])) {
+                    $groups[$group_id] = [];
+                }
+                $groups[$group_id][] = $row;
+
+                continue;
             }
 
-            $groups[$group_id][] = $row;
+            /*
+             * 2) PDF → WRPR PDF READER
+             */
+            if (strcasecmp($format, 'PDF') === 0) {
+
+                if (!isset($pdf_groups[$group_id])) {
+                    $pdf_groups[$group_id] = [];
+                }
+                $pdf_groups[$group_id][] = $row;
+
+                continue;
+            }
+
+            // Diğer formatlar yok sayılır
         }
 
         // Sonuç sayacı
         $result = [
-            'groups' => count($groups),
+            'groups' => count($groups),  // audio group sayısı (eski anahtar korunuyor)
             'audio'  => 0,
             'pdf'    => 0,
         ];
 
-        if (empty($groups)) {
+        /*
+         * --------------- 1) AUDIO IMPORT (WRAP) ---------------
+         */
+        if (!empty($groups)) {
+            // Mevcut player deposu
+            $players = get_option('wrap_players', []);
+            if (!is_array($players)) {
+                $players = [];
+            }
+
+            // Her group_id → bir player
+            foreach ($groups as $group_id => $items) {
+                $player = $this->build_player($group_id, $items, $categories);
+
+                // Array key = slug (delete vb. düzgün çalışıyor)
+                $players[$player['slug']] = $player;
+                $result['audio']++;
+            }
+
+            update_option('wrap_players', $players);
             update_option('wrap_categories', $categories);
-            return $result;
         }
 
-        // Mevcut player deposu
-        $players = get_option('wrap_players', []);
-        if (!is_array($players)) {
-            $players = [];
+        /*
+         * --------------- 2) PDF IMPORT (WRPR) – FINAL VERSION ---------------
+         *
+         * CSV'de format = "PDF" olan satırlardan:
+         * - wrpr_readers option'ına reader kaydı
+         * - her reader için books dizisi üretir.
+         *
+         * PDF Player, Audio Player gibi dil filtresi kullandığı için:
+         * - Her book.language = tam metin ("English")
+         * - Her book.category = dil kodu ("en")
+         * - Reader.categories = unique dil listesi
+         * - reader_id hem array key'i hem de 'id' alanı
+         */
+        if (!empty($pdf_groups)) {
+
+            $readers = get_option('wrpr_readers', []);
+            if (!is_array($readers)) {
+                $readers = [];
+            }
+
+            foreach ($pdf_groups as $group_id => $items) {
+
+                // Başlık (reader adı)
+                $first = reset($items);
+                $title = isset($first['product_title'])
+                    ? sanitize_text_field($first['product_title'])
+                    : (string) $group_id;
+
+                // Reader için stabil base string
+                $slug_base   = $title . '-' . $group_id;
+                $reader_slug = sanitize_title($slug_base);
+
+                // Reader ID – hem key hem de value['id']
+                $reader_id = 'wrpr_' . abs(crc32(sanitize_title($slug_base)));
+
+                // Books + kategori listeleri
+                $books          = [];
+                $unique_langs   = [];   // "English", "German"...
+                $unique_cat_ids = [];   // "en", "de"...
+
+                foreach ($items as $row) {
+
+                    // Dil kodu
+                    $raw_lang  = strtoupper(trim((string) ($row['language'] ?? 'UN')));
+                    $lang_name = $this->language_names[$raw_lang] ?? $raw_lang; // "English"
+                    $cat_id    = strtolower($raw_lang); // "en"
+
+                    // Benzersiz listelere ekle
+                    if (!in_array($lang_name, $unique_langs, true)) {
+                        $unique_langs[] = $lang_name;
+                    }
+                    if (!in_array($cat_id, $unique_cat_ids, true)) {
+                        $unique_cat_ids[] = $cat_id;
+                    }
+
+                    // Book nesnesi (PDF Player için tam uyumlu)
+                    $books[] = [
+                        'title'     => sanitize_text_field($row['product_title'] ?? ''),
+                        'author'    => '',
+                        'language'  => $lang_name,      // dropdown için
+                        'category'  => $cat_id,         // JS filtre için
+                        'image_url' => '',
+                        'pdf_url'   => esc_url_raw($row['file_urls'] ?? ''),
+                        'buy_link'  => esc_url_raw($row['buy_link'] ?? ''),
+                    ];
+                }
+
+                // FINAL READER OBJESI
+                $readers[$reader_id] = [
+                    'id'         => $reader_id,
+                    'name'       => $title,
+                    'slug'       => $reader_slug,
+                    'books'      => $books,
+                    'categories' => $unique_langs,   // dil listesi (opsiyonel ama faydalı)
+                    'cat_ids'    => $unique_cat_ids, // shorthand (opsiyonel)
+                ];
+
+                $result['pdf']++;
+            }
+
+            update_option('wrpr_readers', $readers);
         }
-
-        // Her group_id → bir player
-        foreach ($groups as $group_id => $items) {
-            $player = $this->build_player($group_id, $items, $categories);
-
-            // 🔹 Artık array key = slug
-            $players[$player['slug']] = $player;
-            $result['audio']++;
-        }
-
-        update_option('wrap_players', $players);
-        update_option('wrap_categories', $categories);
 
         return $result;
     }
 
     /**
-     * Player oluşturur
+     * Player oluşturur (AUDIO / WRAP)
      *
      * @param string $group_id
      * @param array  $items
@@ -152,7 +260,7 @@ class WRPAI_Import_Runner {
     }
 
     /**
-     * CSV satırından track çıkarır
+     * CSV satırından track çıkarır (AUDIO)
      *
      * @param array  $row
      * @param string $cat_id
@@ -173,7 +281,7 @@ class WRPAI_Import_Runner {
     }
 
     /**
-     * Slug üretir (string)
+     * Slug üretir (string) – AUDIO player için
      *
      * @param string $title
      * @param string $group_id
@@ -218,7 +326,7 @@ class WRPAI_Import_Runner {
     }
 
     /**
-     * Kategori ekle (id => name)
+     * Kategori ekle (id => name) – AUDIO için
      *
      * @param string $lang_code
      * @param array  $categories
